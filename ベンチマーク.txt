@@ -1,0 +1,4 @@
+# 初回
+{"pass":true,"score":1210,"campaign":0,"language":"Go","messages":[]}
+# nginx改良後
+{"pass":true,"score":1210,"campaign":0,"language":"Go","messages":[]}
