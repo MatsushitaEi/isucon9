@@ -146,6 +146,21 @@ type TransactionEvidence struct {
 	CreatedAt          time.Time `json:"-" db:"created_at"`
 	UpdatedAt          time.Time `json:"-" db:"updated_at"`
 }
+type TransactionEvidenceWithReserveID struct {
+	ID                 int64     `json:"id" db:"id"`
+	SellerID           int64     `json:"seller_id" db:"seller_id"`
+	BuyerID            int64     `json:"buyer_id" db:"buyer_id"`
+	Status             string    `json:"status" db:"status"`
+	ItemID             int64     `json:"item_id" db:"item_id"`
+	ItemName           string    `json:"item_name" db:"item_name"`
+	ItemPrice          int       `json:"item_price" db:"item_price"`
+	ItemDescription    string    `json:"item_description" db:"item_description"`
+	ItemCategoryID     int       `json:"item_category_id" db:"item_category_id"`
+	ItemRootCategoryID int       `json:"item_root_category_id" db:"item_root_category_id"`
+	CreatedAt          time.Time `json:"-" db:"created_at"`
+	UpdatedAt          time.Time `json:"-" db:"updated_at"`
+	ReserveID          string    `json:"reserve_id" db:"reserve_id"`
+}
 
 type Shipping struct {
 	TransactionEvidenceID int64     `json:"transaction_evidence_id" db:"transaction_evidence_id"`
@@ -918,76 +933,134 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemDetails := []ItemDetail{}
+
+	// ユーザーを１回で取得する
+	var user_ids []int64
 	for _, item := range items {
-		seller, err := getUserSimpleByID(tx, item.SellerID)
-		if err != nil {
+		user_ids = append(user_ids, item.SellerID, item.BuyerID)
+	}
+	sql_query, params, err := sqlx.In("SELECT id, account_name as accountname, num_sell_items as numsellitems FROM `users` WHERE `id` IN (?)", user_ids)
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
+		return
+	}
+	var users []UserSimple
+	err = tx.Select(&users, sql_query, params...)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "user not found")
+		tx.Rollback()
+		return
+	}
+
+	// categoryを１回で取得する
+	var category_ids []int
+	for _, item := range items {
+		category_ids = append(category_ids, item.CategoryID)
+	}
+	sql_query, params, err = sqlx.In("SELECT * FROM `categories` WHERE `id` IN (?)", category_ids)
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
+		return
+	}
+	var categories []Category
+	err = tx.Select(&categories, sql_query, params...)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "category not found")
+		tx.Rollback()
+		return
+	}
+
+	// transaction_evidencesを１回で取得する
+	var item_ids []int64
+	for _, item := range items {
+		item_ids = append(item_ids, item.ID)
+	}
+	sql_query, params, err = sqlx.In("SELECT tx.*, sh.reserve_id FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
+		return
+	}
+	var transactionEvidences []TransactionEvidenceWithReserveID
+	err = tx.Select(&transactionEvidences, sql_query, params...)
+	if err != nil && err != sql.ErrNoRows {
+		outputErrorMsg(w, http.StatusInternalServerError, "db error")
+		tx.Rollback()
+		return
+	}
+
+	// itemDetailの作成
+	for _, item := range items {
+		var seller UserSimple
+		var buyer UserSimple
+		var category Category
+		var transactionEvidence TransactionEvidenceWithReserveID
+		// user
+		for _, user := range users {
+			if item.SellerID == user.ID {
+				seller = user
+			} else if item.BuyerID == user.ID {
+				buyer = user
+			}
+		}
+		if seller.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "seller not found")
 			tx.Rollback()
 			return
 		}
-		category, err := getCategoryByID(tx, item.CategoryID)
-		if err != nil {
+		// category
+		for _, tmp_category := range categories {
+			if item.CategoryID == tmp_category.ID {
+				category = tmp_category
+			}
+		}
+		if category.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "category not found")
 			tx.Rollback()
 			return
+		}
+		// transaction_evidence, sh.reserve_id
+		for _, tmp_tx_evidence := range transactionEvidences {
+			if item.ID == tmp_tx_evidence.ID {
+				transactionEvidence = tmp_tx_evidence
+			}
 		}
 
 		itemDetail := ItemDetail{
 			ID:       item.ID,
 			SellerID: item.SellerID,
 			Seller:   &seller,
-			// BuyerID
-			// Buyer
+			//BuyerID:     item.BuyerID,
+			//Buyer:       &buyer,
 			Status:      item.Status,
 			Name:        item.Name,
 			Price:       item.Price,
 			Description: item.Description,
 			ImageURL:    getImageURL(item.ImageName),
 			CategoryID:  item.CategoryID,
-			// TransactionEvidenceID
+			//TransactionEvidenceID
 			// TransactionEvidenceStatus
 			// ShippingStatus
 			Category:  &category,
 			CreatedAt: item.CreatedAt.Unix(),
 		}
 
-		if item.BuyerID != 0 {
-			buyer, err := getUserSimpleByID(tx, item.BuyerID)
-			if err != nil {
-				outputErrorMsg(w, http.StatusNotFound, "buyer not found")
-				tx.Rollback()
-				return
-			}
+		if buyer.ID > 0 {
 			itemDetail.BuyerID = item.BuyerID
 			itemDetail.Buyer = &buyer
 		}
 
-		transactionEvidence := TransactionEvidence{}
-		err = tx.Get(&transactionEvidence, "SELECT * FROM `transaction_evidences` WHERE `item_id` = ?", item.ID)
-		if err != nil && err != sql.ErrNoRows {
-			// It's able to ignore ErrNoRows
-			log.Print(err)
-			outputErrorMsg(w, http.StatusInternalServerError, "db error")
-			tx.Rollback()
-			return
-		}
-
 		if transactionEvidence.ID > 0 {
-			shipping := Shipping{}
-			err = tx.Get(&shipping, "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = ?", transactionEvidence.ID)
-			if err == sql.ErrNoRows {
+			reserve_id := transactionEvidence.ReserveID
+			if reserve_id == "" {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
 				tx.Rollback()
 				return
 			}
-			if err != nil {
-				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "db error")
-				tx.Rollback()
-				return
-			}
 			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: shipping.ReserveID,
+				ReserveID: reserve_id,
 			})
 			if err != nil {
 				log.Print(err)
@@ -1003,6 +1076,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 		itemDetails = append(itemDetails, itemDetail)
 	}
+
 	tx.Commit()
 
 	hasNext := false
