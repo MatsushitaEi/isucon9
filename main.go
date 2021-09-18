@@ -184,7 +184,7 @@ type Category struct {
 	ID                 int    `json:"id" db:"id"`
 	ParentID           int    `json:"parent_id" db:"parent_id"`
 	CategoryName       string `json:"category_name" db:"category_name"`
-	ParentCategoryName string `json:"parent_category_name,omitempty" db:"-"`
+	ParentCategoryName string `json:"parent_category_name,omitempty" db:"parent_category_name"`
 }
 
 type reqInitialize struct {
@@ -964,7 +964,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	for _, item := range items {
 		category_ids = append(category_ids, item.CategoryID)
 	}
-	sql_query, params, err = sqlx.In("SELECT * FROM `categories` WHERE `id` IN (?)", category_ids)
+	sql_query, params, err = sqlx.In("SELECT ct.*, parent.category_name AS parent_category_name FROM `categories` AS ct LEFT JOIN `categories` AS parent ON ct.parent_id = parent.id WHERE ct.id IN (?)", category_ids)
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
@@ -1029,7 +1029,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 		// transaction_evidence, sh.reserve_id
 		for _, tmp_tx_evidence := range transactionEvidences {
-			if item.ID == tmp_tx_evidence.ID {
+			if item.ID == tmp_tx_evidence.ItemID {
 				transactionEvidence = tmp_tx_evidence
 			}
 		}
