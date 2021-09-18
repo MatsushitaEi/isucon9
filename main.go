@@ -148,7 +148,7 @@ type TransactionEvidence struct {
 	CreatedAt          time.Time `json:"-" db:"created_at"`
 	UpdatedAt          time.Time `json:"-" db:"updated_at"`
 }
-type TransactionEvidenceWithReserveID struct {
+type TransactionEvidenceWithShip struct {
 	ID                 int64     `json:"id" db:"id"`
 	SellerID           int64     `json:"seller_id" db:"seller_id"`
 	BuyerID            int64     `json:"buyer_id" db:"buyer_id"`
@@ -162,6 +162,7 @@ type TransactionEvidenceWithReserveID struct {
 	CreatedAt          time.Time `json:"-" db:"created_at"`
 	UpdatedAt          time.Time `json:"-" db:"updated_at"`
 	ReserveID          string    `json:"reserve_id" db:"reserve_id"`
+	ShipStatus         string    `json:"ship_status" db:"ship_status"`
 }
 
 type Shipping struct {
@@ -980,26 +981,27 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// transaction_evidencesを１回で取得する
-	sql_query, params, err = sqlx.In("SELECT tx.*, sh.reserve_id FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
+	sql_query, params, err = sqlx.In("SELECT tx.*, sh.reserve_id, sh.status AS ship_status FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
 	if err != nil {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
 		return
 	}
-	var transactionEvidences []TransactionEvidenceWithReserveID
+	var transactionEvidences []TransactionEvidenceWithShip
 	err = tx.Select(&transactionEvidences, sql_query, params...)
 	if err != nil && err != sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		tx.Rollback()
 		return
 	}
+	tx.Commit()
 
 	// itemDetailの作成
 	for _, item := range items {
 		var seller UserSimple
 		var buyer UserSimple
 		var category Category
-		var transactionEvidence TransactionEvidenceWithReserveID
+		var transactionEvidence TransactionEvidenceWithShip
 		// user
 		for _, user := range users {
 			if item.SellerID == user.ID {
@@ -1010,7 +1012,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 		if seller.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "seller not found")
-			tx.Rollback()
 			return
 		}
 		// category
@@ -1021,7 +1022,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 		if category.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "category not found")
-			tx.Rollback()
 			return
 		}
 		// transaction_evidence, sh.reserve_id
@@ -1057,30 +1057,26 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 		if transactionEvidence.ID > 0 {
 			reserve_id := transactionEvidence.ReserveID
+			ship_status := transactionEvidence.ShipStatus
 			if reserve_id == "" {
 				outputErrorMsg(w, http.StatusNotFound, "shipping not found")
-				tx.Rollback()
 				return
 			}
-			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: reserve_id,
-			})
-			if err != nil {
-				log.Print(err)
+			/*
+				ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
+					ReserveID: reserve_id,
+				})
+			*/
+			if ship_status == "" {
 				outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
-				tx.Rollback()
 				return
 			}
-
 			itemDetail.TransactionEvidenceID = transactionEvidence.ID
 			itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-			itemDetail.ShippingStatus = ssr.Status
+			itemDetail.ShippingStatus = ship_status
 		}
-
 		itemDetails = append(itemDetails, itemDetail)
 	}
-
-	tx.Commit()
 
 	hasNext := false
 	if len(itemDetails) > TransactionsPerPage {
