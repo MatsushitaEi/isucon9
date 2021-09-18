@@ -940,11 +940,16 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 
 	itemDetails := []ItemDetail{}
 
-	// ユーザーを１回で取得する
 	var user_ids []int64
+	var category_ids []int
+	var item_ids []int64
 	for _, item := range items {
 		user_ids = append(user_ids, item.SellerID, item.BuyerID)
+		category_ids = append(category_ids, item.CategoryID)
+		item_ids = append(item_ids, item.ID)
 	}
+
+	// ユーザーを１回で取得する
 	sql_query, params, err := sqlx.In("SELECT id, account_name as accountname, num_sell_items as numsellitems FROM `users` WHERE `id` IN (?)", user_ids)
 	if err != nil {
 		log.Print(err)
@@ -960,10 +965,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// categoryを１回で取得する
-	var category_ids []int
-	for _, item := range items {
-		category_ids = append(category_ids, item.CategoryID)
-	}
 	sql_query, params, err = sqlx.In("SELECT ct.*, parent.category_name AS parent_category_name FROM `categories` AS ct LEFT JOIN `categories` AS parent ON ct.parent_id = parent.id WHERE ct.id IN (?)", category_ids)
 	if err != nil {
 		log.Print(err)
@@ -979,10 +980,6 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// transaction_evidencesを１回で取得する
-	var item_ids []int64
-	for _, item := range items {
-		item_ids = append(item_ids, item.ID)
-	}
 	sql_query, params, err = sqlx.In("SELECT tx.*, sh.reserve_id FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
 	if err != nil {
 		log.Print(err)
