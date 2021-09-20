@@ -23,6 +23,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	_ "net/http/pprof"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -62,9 +64,10 @@ const (
 )
 
 var (
-	templates *template.Template
-	dbx       *sqlx.DB
-	store     sessions.Store
+	templates   *template.Template
+	dbx         *sqlx.DB
+	store       sessions.Store
+	categoryMap = make(map[int]*Category)
 )
 
 type Config struct {
@@ -346,6 +349,17 @@ func main() {
 
 	defer dbx.Close()
 
+	// categoryテーブルのオンメモリ化
+	var g errgroup.Group
+	categories := []*Category{}
+	g.Go(func() error {
+		err := dbx.Select(&categories, "SELECT * FROM `categories`")
+		for _, c := range categories {
+			categoryMap[c.ID] = c
+		}
+		return err
+	})
+
 	mux := goji.NewMux()
 
 	// API
@@ -384,6 +398,10 @@ func main() {
 	// Assets
 	mux.Handle(pat.Get("/*"), http.FileServer(http.Dir("../public")))
 	log.Fatal(http.ListenAndServe(":8000", mux))
+
+	if err := g.Wait(); err != nil {
+		log.Fatalf("categoriesテーブルのオンメモリ化失敗: %s.", err.Error())
+	}
 }
 
 func getSession(r *http.Request) *sessions.Session {
@@ -435,13 +453,9 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 }
 
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
-	err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
-	if category.ParentID != 0 {
-		parentCategory, err := getCategoryByID(q, category.ParentID)
-		if err != nil {
-			return category, err
-		}
-		category.ParentCategoryName = parentCategory.CategoryName
+	category = *categoryMap[categoryID]
+	if category.ParentID > 0 {
+		category.ParentCategoryName = categoryMap[category.ParentID].CategoryName
 	}
 	return category, err
 }
