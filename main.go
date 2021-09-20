@@ -449,12 +449,44 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 	return userSimple, err
 }
 
+func getUserSimpleByIDList(tx *sqlx.Tx, user_ids []int64) (users []UserSimple, err error) {
+	// ユーザーを１回で取得する
+	sql_query, params, err := sqlx.In("SELECT id, account_name, num_sell_items FROM `users` WHERE `id` IN (?)", user_ids)
+	if err != nil {
+		return users, err
+	}
+	err = tx.Select(&users, sql_query, params...)
+	return users, err
+}
+
+func getTransactionEvidenceList(tx *sqlx.Tx, item_ids []int64) (transactionEvidences []TransactionEvidenceWithShip, err error) {
+	// tx_evidenceを１回で取得する
+	sql_query, params, err := sqlx.In("SELECT tx.*, sh.reserve_id, sh.status AS ship_status FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
+	if err != nil {
+		return transactionEvidences, err
+	}
+	err = tx.Select(&transactionEvidences, sql_query, params...)
+	return transactionEvidences, err
+}
+
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
 	category = *categoryMap[categoryID]
 	if category.ParentID > 0 {
 		category.ParentCategoryName = categoryMap[category.ParentID].CategoryName
 	}
 	return category, err
+}
+
+func getCategoryByIDList(categoy_ids []int) (categories []Category, err error) {
+	// カテゴリを１回で取得する
+	for _, ct_id := range categoy_ids {
+		ct, err := getCategoryByID(dbx, ct_id)
+		if err != nil {
+			return categories, err
+		}
+		categories = append(categories, ct)
+	}
+	return categories, nil
 }
 
 func getConfigByName(name string) (string, error) {
@@ -595,18 +627,56 @@ func getNewItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	tx := dbx.MustBegin()
+	var user_ids []int64
+	var category_ids []int
+	for _, item := range items {
+		user_ids = append(user_ids, item.SellerID)
+		category_ids = append(category_ids, item.CategoryID)
+	}
+	//userを一括で取得
+	var users []UserSimple
+	users, err = getUserSimpleByIDList(tx, user_ids)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "user not found")
+		tx.Rollback()
+		return
+	}
+	// categoryを１回で取得する
+	var categories []Category
+	categories, err = getCategoryByIDList(category_ids)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "category not found")
+		tx.Rollback()
+		return
+	}
+	tx.Commit()
+
 	itemSimples := []ItemSimple{}
 	for _, item := range items {
-		seller, err := getUserSimpleByID(dbx, item.SellerID)
-		if err != nil {
+		var seller UserSimple
+		var category Category
+		for _, user := range users {
+			if item.SellerID == user.ID {
+				seller = user
+				break
+			}
+		}
+		if seller.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "seller not found")
 			return
 		}
-		category, err := getCategoryByID(dbx, item.CategoryID)
-		if err != nil {
+		for _, ct := range categories {
+			if item.CategoryID == ct.ID {
+				category = ct
+				break
+			}
+		}
+		if category.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "category not found")
 			return
 		}
+
 		itemSimples = append(itemSimples, ItemSimple{
 			ID:         item.ID,
 			SellerID:   item.SellerID,
@@ -723,18 +793,56 @@ func getNewCategoryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx := dbx.MustBegin()
+	var user_ids []int64
+	var category_ids []int
+	for _, item := range items {
+		user_ids = append(user_ids, item.SellerID)
+		category_ids = append(category_ids, item.CategoryID)
+	}
+	//userを一括で取得
+	var users []UserSimple
+	users, err = getUserSimpleByIDList(tx, user_ids)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "user not found")
+		tx.Rollback()
+		return
+	}
+	// categoryを１回で取得する
+	var categories []Category
+	categories, err = getCategoryByIDList(category_ids)
+	if err != nil {
+		outputErrorMsg(w, http.StatusNotFound, "category not found")
+		tx.Rollback()
+		return
+	}
+	tx.Commit()
+
 	itemSimples := []ItemSimple{}
 	for _, item := range items {
-		seller, err := getUserSimpleByID(dbx, item.SellerID)
-		if err != nil {
+		var seller UserSimple
+		var category Category
+		for _, user := range users {
+			if item.SellerID == user.ID {
+				seller = user
+				break
+			}
+		}
+		if seller.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "seller not found")
 			return
 		}
-		category, err := getCategoryByID(dbx, item.CategoryID)
-		if err != nil {
+		for _, ct := range categories {
+			if item.CategoryID == ct.ID {
+				category = ct
+				break
+			}
+		}
+		if category.ID == 0 {
 			outputErrorMsg(w, http.StatusNotFound, "category not found")
 			return
 		}
+
 		itemSimples = append(itemSimples, ItemSimple{
 			ID:         item.ID,
 			SellerID:   item.SellerID,
@@ -962,14 +1070,8 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ユーザーを１回で取得する
-	sql_query, params, err := sqlx.In("SELECT id, account_name, num_sell_items FROM `users` WHERE `id` IN (?)", user_ids)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
-		return
-	}
 	var users []UserSimple
-	err = tx.Select(&users, sql_query, params...)
+	users, err = getUserSimpleByIDList(tx, user_ids)
 	if err != nil {
 		outputErrorMsg(w, http.StatusNotFound, "user not found")
 		tx.Rollback()
@@ -977,14 +1079,8 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// categoryを１回で取得する
-	sql_query, params, err = sqlx.In("SELECT ct.*, parent.category_name AS parent_category_name FROM `categories` AS ct LEFT JOIN `categories` AS parent ON ct.parent_id = parent.id WHERE ct.id IN (?)", category_ids)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
-		return
-	}
 	var categories []Category
-	err = tx.Select(&categories, sql_query, params...)
+	categories, err = getCategoryByIDList(category_ids)
 	if err != nil {
 		outputErrorMsg(w, http.StatusNotFound, "category not found")
 		tx.Rollback()
@@ -992,14 +1088,8 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// transaction_evidencesを１回で取得する
-	sql_query, params, err = sqlx.In("SELECT tx.*, sh.reserve_id, sh.status AS ship_status FROM `transaction_evidences` AS tx LEFT JOIN `shippings` AS sh on tx.ID = sh.transaction_evidence_id WHERE tx.item_id IN (?)", item_ids)
-	if err != nil {
-		log.Print(err)
-		outputErrorMsg(w, http.StatusInternalServerError, "sql作成エラー")
-		return
-	}
 	var transactionEvidences []TransactionEvidenceWithShip
-	err = tx.Select(&transactionEvidences, sql_query, params...)
+	transactionEvidences, err = getTransactionEvidenceList(tx, item_ids)
 	if err != nil && err != sql.ErrNoRows {
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		tx.Rollback()
@@ -1029,6 +1119,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		for _, tmp_category := range categories {
 			if item.CategoryID == tmp_category.ID {
 				category = tmp_category
+				break
 			}
 		}
 		if category.ID == 0 {
@@ -1039,6 +1130,7 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		for _, tmp_tx_evidence := range transactionEvidences {
 			if item.ID == tmp_tx_evidence.ItemID {
 				transactionEvidence = tmp_tx_evidence
+				break
 			}
 		}
 
