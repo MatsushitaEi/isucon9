@@ -24,6 +24,8 @@ import (
 
 	_ "net/http/pprof"
 
+	"errors"
+
 	"golang.org/x/sync/errgroup"
 )
 
@@ -1206,11 +1208,18 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, errCode, errMsg := getUser(r)
-	if errMsg != "" {
-		outputErrorMsg(w, errCode, errMsg)
-		return
-	}
+	var g errgroup.Group
+	var user User
+	var errCode int
+	var errMsg string
+	g.Go(func() error {
+		user, errCode, errMsg = getUser(r)
+		if errMsg != "" {
+			err := errors.New(errMsg)
+			return err
+		}
+		return nil
+	})
 
 	item := Item{}
 	err = dbx.Get(&item, "SELECT * FROM `items` WHERE `id` = ?", itemID)
@@ -1253,6 +1262,12 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		// ShippingStatus
 		Category:  &category,
 		CreatedAt: item.CreatedAt.Unix(),
+	}
+
+	// getUserの結果取得
+	if err := g.Wait(); err != nil {
+		outputErrorMsg(w, errCode, errMsg)
+		return
 	}
 
 	if (user.ID == item.SellerID || user.ID == item.BuyerID) && item.BuyerID != 0 {
